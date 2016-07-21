@@ -1,0 +1,8 @@
+numpy
+scipy
+xarray
+netCDF4
+dask
+bottleneck
+
+pytest
