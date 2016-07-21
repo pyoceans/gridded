@@ -8,8 +8,17 @@ AI = np.linalg.inv(A)
 
 def compute_coeffs(px, py):
     """
-    Params:
-    px, py: x, y coordinates of the polygon. Order matters(?) (br, tr, tl, bl
+    Input:
+    -----
+    px, py :    array
+                x, y coordinates of the polygon. Order matters: br, tr, tl, bl
+    
+    Output:
+    ------
+    a, b :      array, array
+                a, the alpha coefficients in x
+                b, the alpha coefficients in y
+    
     """
     a = np.dot(AI, px.T)   # no need for complex conjugate. px is always real.
     b = np.dot(AI, py.T)   # so is py
@@ -95,7 +104,7 @@ def array2grid(x, y):
     Output
     ------
     nodes : flattened xy pairs
-    faces : indices of squares
+    faces : indices of square nodes
     '''
     nodes = np.ascontiguousarray(np.column_stack((x[:].reshape(-1),
                                                   y[:].reshape(-1)))).astype(np.float64)
@@ -128,16 +137,15 @@ y -= y.mean()
 # create nodes and faces
 nodes, faces = array2grid(x, y)
 
+squares = np.array([nodes[face] for face in faces])
 
-sl = [yslice, xslice] = self.get_efficient_slice(points, indices, grid, _memo, _copy, _hash)
 
-lons = lons[sl]
-lats = lats[sl]
 
-indices = indices - [sl[0].start, sl[1].start]
+#######################
+# edited to hear
+######################
 
-polyx = self.get_variable_by_index(lons, indices)
-polyy = self.get_variable_by_index(lats, indices)
+
 
 a, b = compute_coeffs(polyx, polyy)
 
