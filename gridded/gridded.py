@@ -14,3 +14,9 @@ class Gridded:
         for go in cls._grid_obj_classes:
             if hasattr(go, 'is_mine') and go.is_mine(*args, **kwargs):
                 return go(*args, **kwargs)
+
+class TestGridObject:
+    @classmethod
+    def is_mine(cls, nc, *args, **kwargs):
+        return True
+

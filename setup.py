@@ -27,5 +27,10 @@ setup(
         'Programming Language :: Python',
         'Topic :: Scientific/Engineering',
     ],
+    entry_points     = {
+        'gridded.grid_objects': [
+            'test_grid_object = gridded.gridded:TestGridObject',
+        ]
+    }
 )
 
