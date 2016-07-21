@@ -17,8 +17,11 @@ class Gridded:
 
 class TestDimensionAdapter:
     @classmethod
-    def is_mine(cls, *args, **kwargs):
-        return True
+    def is_mine(cls, prime, *args, **kwargs):
+        if isinstance(prime, bool) and prime:
+            return True
+
+        return False
 
     def __init__(self, *args, **kwargs):
         pass
