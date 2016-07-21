@@ -10,8 +10,7 @@ class Gridded:
             cls._grid_obj_classes.append(ep.load())
 
     @classmethod
-    def load(cls, nc, *args, **kwargs):
-        for go in self._grid_obj_classes:
-            if hasattr(go, 'is_mine') and go.is_mine(nc):
-                return go(nc, *args, **kwargs)
-
+    def load(cls, *args, **kwargs):
+        for go in cls._grid_obj_classes:
+            if hasattr(go, 'is_mine') and go.is_mine(*args, **kwargs):
+                return go(*args, **kwargs)
