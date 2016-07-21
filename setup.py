@@ -28,8 +28,8 @@ setup(
         'Topic :: Scientific/Engineering',
     ],
     entry_points     = {
-        'gridded.grid_objects': [
-            'test_grid_object = gridded.gridded:TestGridObject',
+        'gridded.dimension_adapters': [
+            'test_dimension_adapter = gridded.gridded:TestDimensionAdapter',
         ]
     }
 )

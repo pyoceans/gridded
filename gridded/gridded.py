@@ -6,7 +6,7 @@ class Gridded:
     @classmethod
     def _load_grid_objs(cls):
         from pkg_resources import working_set
-        for ep in working_set.iter_entry_points('gridded.grid_objects'):
+        for ep in working_set.iter_entry_points('gridded.dimension_adapters'):
             cls._grid_obj_classes.append(ep.load())
 
     @classmethod
@@ -15,8 +15,11 @@ class Gridded:
             if hasattr(go, 'is_mine') and go.is_mine(*args, **kwargs):
                 return go(*args, **kwargs)
 
-class TestGridObject:
+class TestDimensionAdapter:
     @classmethod
-    def is_mine(cls, nc, *args, **kwargs):
+    def is_mine(cls, *args, **kwargs):
         return True
+
+    def __init__(self, *args, **kwargs):
+        pass
 
