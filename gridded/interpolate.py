@@ -1,36 +1,83 @@
+import numpy as np
+import cell_tree2d
 
 # Used by compute coeffs
-A = np.array(([1, 0, 0, 0], 
-              [1, 0, 1, 0], 
-              [1, 1, 1, 1], 
-              [1, 1, 0, 0]))
-AI = np.linalg.inv(A)
 
-def compute_coeffs(px, py):
+_AI = np.linalg.inv(np.array(([1, 0, 0, 0], 
+                              [1, 0, 1, 0], 
+                              [1, 1, 1, 1], 
+                              [1, 1, 0, 0])))
+
+def compute_coeffs(squares_i):
     """
     Input:
     -----
-    px, py :    array
-                x, y coordinates of the polygon. Order matters: br, tr, tl, bl
+    squares :   array,  dimension = (Nsquares, 4, 2)
+                x, y coordinates of the squares in the grid.
+                Order matters for the second dimension: br, tr, tl, bl
     
     Output:
     ------
     a, b :      array, array
-                a, the alpha coefficients in x
-                b, the alpha coefficients in y
+                a, the coefficients in x  (what coefficients?)
+                b, the coefficients in y  (what coefficients?)
     
     """
-    a = np.dot(AI, px.T)   # no need for complex conjugate. px is always real.
-    b = np.dot(AI, py.T)   # so is py
-    return np.array(a), np.array(b)
+    a = np.dot(_AI, squares_i[:,:,0].T)   # no need for complex conjugate. px is always real.
+    b = np.dot(_AI, squares_i[:,:,1].T)   #                           .....so is py
+    return a, b
 
-def x_to_l(x, y, a, b):
+
+def locate_faces(points, grid):
+    """
+    Returns the node grid indices, one per point.
+
+    Points that are not on the node grid will have an index of -1
+
+    If a single point is passed in, a single index will be returned.
+    If a sequence of points is passed in an array of indexes will be returned.
+
+    :param points:  The points that you want to locate -- (lon, lat). If the shape of point
+                    is 1D, function will return a scalar index. If it is 2D, it will return
+                    a 1D array of indices.
+    :type points: array-like containing one or more points: shape (2,) for one point, shape (N, 2)
+                 for more than one point.
+
+    :param grid: The grid on which you want to locate the points
+    :type grid: Name of the grid ('node', 'center', 'edge1', 'edge2)
+
+    This version utilizes the CellTree data structure.
+
+    """
+
+    points = np.asarray(points, dtype=np.float64)
+    just_one = (points.ndim == 1)
+    points = points.reshape(-1, 2)
+
+    tree = build_celltree(grid)
+    indices = tree.locate(points)
+    lon, lat = self._get_grid_vars(grid)
+    x = indices % (lat.shape[1] - 1)
+    y = indices // (lat.shape[1] - 1)
+    ind = np.column_stack((y, x))
+    ind[ind[:, 0] == -1] = [-1, -1]
+    if just_one:
+        res = ind[0]
+        return res
+    else:
+        res = np.ma.masked_less(ind, 0)
+        if _memo:
+            self._add_memo(points, res, grid, self._ind_memo_dict, _copy, _hash)
+        return res
+
+
+def get_alphas(x, y, a, b):
     """
     Params:
     a: x coefficients
     b: y coefficients
-    x: x coordinate of point
-    y: y coordinate of point
+    x: x coordinate of points defining squares (possibly only query points)
+    y: y coordinate of points defining squares (possibly only query points)
 
     Returns:
     (l,m) - coordinate in logical space to use for interpolation
@@ -90,8 +137,13 @@ def x_to_l(x, y, a, b):
     # These functions pass both l and m as pointers, modified in place.
     lin_eqn(l, m, np.where(t)[0], aa[t], bb[t], cc[t])
     quad_eqn(l, m, np.where(~t)[0], aa[~t], bb[~t], cc[~t])
+    
+    aa = 1 - l - m + l * m
+    ab = m - l * m
+    ac = l * m
+    ad = l - l * m
 
-    return (l, m)
+    return np.array((aa, ab, ac, ad)).T
 
 
 def array2grid(x, y):
@@ -136,30 +188,53 @@ y -= y.mean()
 
 # create nodes and faces
 nodes, faces = array2grid(x, y)
-
 squares = np.array([nodes[face] for face in faces])
+ct = cell_tree2d.CellTree(nodes, faces)
 
+
+xyi = np.random.randn(10, 2)
+xi, yi = xyi.T
+
+# want only squares that contain query points
+gridpoint_indices = ct.locate(xyi)
+squares_i = squares[gridpoint_indices]
+
+##### make up some trial points
+# 
+#
+a, b = compute_coeffs(squares_i)
+
+alphas = get_alphas(xi, yi, a, b)
+
+
+def z(x, y):
+    return x**2 * y**2 + np.sin(x)*np.cos(y)
+
+z_verts = z(*nodes.T)[faces][gridpoint_indices]
+
+zi = (z_verts * alphas).sum(axis=-1)
+
+zi_true = z(xi, yi)
+
+assert( np.allclose(zi, zi_true) )
 
 
 #######################
 # edited to hear
 ######################
 
-
-
-a, b = compute_coeffs(polyx, polyy)
-
-reflats = points[:, 1]
-reflons = points[:, 0]
-
-l, m = x_to_l(reflons, reflats, a, b)
-
-aa = 1 - l - m + l * m
-ab = m - l * m
-ac = l * m
-ad = l - l * m
-alphas = np.array((aa, ab, ac, ad)).T
-
-if _memo:
-    self._add_memo(points, alphas, grid, self._alpha_memo_dict, _copy, _hash)
-return alphas
+#
+# reflats = points[:, 1]
+# reflons = points[:, 0]
+#
+# l, m = x_to_l(reflons, reflats, a, b)
+#
+# aa = 1 - l - m + l * m
+# ab = m - l * m
+# ac = l * m
+# ad = l - l * m
+# alphas = np.array((aa, ab, ac, ad)).T
+#
+# if _memo:
+#     self._add_memo(points, alphas, grid, self._alpha_memo_dict, _copy, _hash)
+# return alphas
