@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/pyoceans/gridded.svg?branch=master)](https://travis-ci.org/pyoceans/gridded)
+
 # gridded
 API for interpolation on regular grid, curvilinear orthoganal grid, unstructured grid
 
