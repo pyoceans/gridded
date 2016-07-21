@@ -5,6 +5,8 @@ API for interpolation on regular grid, curvilinear orthoganal grid, unstructured
 
 ## Development (conda)
 
+### Setup
+
 ```
 conda create -n gridded -c conda-forge --file requirements.txt
 source activate gridded
@@ -15,6 +17,10 @@ NOTE: If running Python less than 3.5, you should install `cyordereddict`:
 ```
 conda install -c conda-forge cyordereddict
 ```
+
+#### Tests
+
+Be sure to run `python setup.py develop`. Then you can run the suite with `py.test`
 
 ### Creating Your Own gridded-Compatible Dimension Adapter object
 
