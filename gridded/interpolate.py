@@ -1,12 +1,39 @@
 import numpy as np
 import cell_tree2d
 
-# Used by compute coeffs
+from shapely.geometry.polygon import Polygon
+from shapely.geometry.point import Point
+from shapely.geometry import MultiPolygon
+from shapely.geometry import MultiPoint
 
-_AI = np.linalg.inv(np.array(([1, 0, 0, 0], 
-                              [1, 0, 1, 0], 
-                              [1, 1, 1, 1], 
-                              [1, 1, 0, 0])))
+#### NOTES
+
+# Cell interpolation is done using this algorithm: 
+# https://www.particleincell.com/2012/quad-interpolation/
+#
+# First the transformation from a quad in space to a normal unit square.
+# The affine transformation is done using the equations:
+#     x = a1 + a2*l + a3*m + a4*l*m
+#     y = b1 + b2*l + b3*m + b4*l*m
+# constrained by
+#     x1 -> l=0 ; y1 -> m=0    ( lower left point )
+#     x2 -> l=1 ; y2 -> m=0    ( lower right point )
+#     x3 -> l=1 ; y3 -> m=1    ( upper right point )
+#     x4 -> l=0 ; y4 -> m=1    ( upper left point )
+# Which leads to the matrix equation
+#     
+#     [x1    [[1., 0., 0., 0.]   [a1 
+#      x2  =  [1., 0., 1., 0.]    a2 
+#      x3     [1., 1., 1., 1.]    a3 
+#      x4]    [1., 1., 0., 0.]]   a4]
+#
+# Note the transformation defined by the matrix (A) is defined
+# by starting in the lower left and cycling positively (counterclockwise)
+# around the quad.
+_AI = np.linalg.inv( np.array([[1., 0., 0., 0.], 
+                               [1., 0., 1., 0.], 
+                               [1., 1., 1., 1.], 
+                               [1., 1., 0., 0.]]) )
 
 def compute_coeffs(squares_i):
     """
@@ -26,6 +53,20 @@ def compute_coeffs(squares_i):
     a = np.dot(_AI, squares_i[:,:,0].T)   # no need for complex conjugate. px is always real.
     b = np.dot(_AI, squares_i[:,:,1].T)   #                           .....so is py
     return a, b
+
+
+# In short, the generated weights for values at the four node points
+# are the ratio of the area defined by area of the rectangle defined
+# by the trial point and the oposite node normalized by the total
+# cell area.
+
+# Using np.einsum(...) is probaby going to be useful for
+# constructing the interpolated values in the end.
+
+
+
+
+# Used by compute coeffs
 
 
 def locate_faces(points, grid):
@@ -143,7 +184,7 @@ def get_alphas(x, y, a, b):
     ac = l * m
     ad = l - l * m
 
-    return np.array((aa, ab, ac, ad)).T
+    return np.array((aa, ab, ac, ad)).T, l, m
 
 
 def array2grid(x, y):
@@ -161,8 +202,10 @@ def array2grid(x, y):
     nodes = np.ascontiguousarray(np.column_stack((x[:].reshape(-1),
                                                   y[:].reshape(-1)))).astype(np.float64)
     j_len, i_len = x.shape
-    faces = np.array([np.array([[xi + i_len, xi + i_len + 1, xi + 1, xi]
-                                for xi in range(0, i_len - 1, 1)]) + yi * i_len for yi in range(0, j_len - 1)])
+    # faces = np.array([np.array([[xi + i_len, xi + i_len + 1, xi + 1, xi]
+    #                             for xi in range(0, i_len - 1, 1)]) + yi * i_len for yi in range(0, j_len - 1)])
+    faces = np.array([np.array([[xi, xi+1, xi+i_len+1, xi+i_len]
+                                for xi in range(0, i_len-1, 1)]) + yi * i_len for yi in range(0, j_len-1)])
     faces = np.ascontiguousarray(faces.reshape(-1, 4).astype(np.int32))
     
     return nodes, faces
@@ -185,26 +228,63 @@ y /= 10.0
 x -= x.mean()
 y -= y.mean()
 
+x_nodes, y_nodes = x.flatten(), y.flatten()
+
+x_centers = 0.25*(x[1:, 1:] + x[1:, :-1] + x[:-1, 1:] + x[:-1, :-1]).flatten()
+y_centers = 0.25*(y[1:, 1:] + y[1:, :-1] + y[:-1, 1:] + y[:-1, :-1]).flatten()
 
 # create nodes and faces
 nodes, faces = array2grid(x, y)
 squares = np.array([nodes[face] for face in faces])
 ct = cell_tree2d.CellTree(nodes, faces)
 
-
-xyi = np.random.randn(10, 2)
-xi, yi = xyi.T
+# create a set of trial points
+# xyi = np.random.randn(10, 2)                 # random points
+xyi = np.vstack((x_centers, y_centers)).T       # centers of gridded data squares
+# xyi = np.vstack((x_nodes, y_nodes)).T           # nodes of gridded data squares, ie., at data points
 
 # want only squares that contain query points
 gridpoint_indices = ct.locate(xyi)
+
+# remove gridpoint indices with value -1, 
+# which are outside the grid domain
+inside = gridpoint_indices >= 0
+gridpoint_indices = gridpoint_indices[inside]
+xyi = xyi[inside]
+
+
 squares_i = squares[gridpoint_indices]
+
+
+# First a sanity check. Are the trial points really inside squares_i?
+
+def test_cell_tree2d(squares, points):
+    '''
+    squares: an array of quads, full grid [Nsquares, 4, 2]
+    points:  an array of trial points [Npoints, 2]
+    ''' 
+    # find squares that contain query points
+    gridpoint_indices = ct.locate(points)
+
+    # remove indices with value -1, outside the grid domain
+    inside = gridpoint_indices >= 0    # good points, inside domain
+    gridpoint_indices = gridpoint_indices[inside]
+    points = points[inside]
+
+    mesh = MultiPolygon([Polygon(p) for p in squares])
+    trial = MultiPoint([Point(p) for p in xyi])
+    
+    contains = [m.contains(p) for m, p in zip(mesh, trial)]
+    
+    assert(np.alltrue(contains))
 
 ##### make up some trial points
 # 
 #
 a, b = compute_coeffs(squares_i)
 
-alphas = get_alphas(xi, yi, a, b)
+xi, yi = xyi.T
+alphas, l, m = get_alphas(xi, yi, a, b)
 
 
 def z(x, y):
@@ -216,7 +296,7 @@ zi = (z_verts * alphas).sum(axis=-1)
 
 zi_true = z(xi, yi)
 
-assert( np.allclose(zi, zi_true) )
+# assert( np.allclose(zi, zi_true) )
 
 
 #######################
