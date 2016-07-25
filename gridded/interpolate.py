@@ -12,7 +12,7 @@ from shapely.geometry import MultiPoint
 # https://www.particleincell.com/2012/quad-interpolation/
 #
 # First the transformation from a quad in space to a normal unit square.
-# The affine transformation is done using the equations:
+# The transformation is done using the equations:
 #     x = a1 + a2*l + a3*m + a4*l*m
 #     y = b1 + b2*l + b3*m + b4*l*m
 # constrained by
@@ -56,18 +56,6 @@ def compute_coeffs(squares_i):
     return a, b
 
 
-# In short, the generated weights for values at the four node points
-# are the ratio of the area defined by area of the rectangle defined
-# by the trial point and the oposite node normalized by the total
-# cell area.
-
-# Using np.einsum(...) is probaby going to be useful for
-# constructing the interpolated values in the end.
-
-
-
-
-# Used by compute coeffs
 
 
 def locate_faces(points, grid):
@@ -111,17 +99,21 @@ def locate_faces(points, grid):
         return res
 
 
-def get_lm(x, y, a, b):
+def get_lm(x, y, a, b, eps=1e-5):
     """
     Input:
     -----
-    a: x affine transformation coefficients
-    b: y affine transformation coefficients
+    a: x transformation coefficients
+    b: y transformation coefficients
     x: x coordinate of points defining squares (possibly only query points)
     y: y coordinate of points defining squares (possibly only query points)
 
     Returns:
     weights - weights of grid nodes to use in interpolation
+    
+    This routine appears to calculate l and m backwards, does something unclear when the
+    determinate is negative. NEEDS WORK AND TESTING.
+    
     """
     def lin_eqn(l, m, ind_arr, aa, bb, cc):
         """
@@ -134,7 +126,7 @@ def get_lm(x, y, a, b):
         l[ind_arr] = (x[ind_arr] - a[0][ind_arr] - a[2][ind_arr]
                       * m[ind_arr]) / (a[1][ind_arr] + a[3][ind_arr] * m[ind_arr])
 
-    def quad_eqn(l, m, ind_arr, aa, bb, cc, eps=1e-5):
+    def quad_eqn(l, m, ind_arr, aa, bb, cc, eps):
         if len(aa) is 0:
             return
         k = bb * bb - 4 * aa * cc
@@ -168,19 +160,24 @@ def get_lm(x, y, a, b):
 
     m = np.zeros(bb.shape)
     l = np.zeros(bb.shape)
-    t = aa[:] == 0
+    t = aa[:] == 0   # should probably set some tolerance here, instead of testing equality.
     
     # These functions pass both l and m as pointers, modified in place.
     lin_eqn(l, m, np.where(t)[0], aa[t], bb[t], cc[t])
-    quad_eqn(l, m, np.where(~t)[0], aa[~t], bb[~t], cc[~t])
+    quad_eqn(l, m, np.where(~t)[0], aa[~t], bb[~t], cc[~t], eps)
     
-    return l, m
+    return m, l    # These were calculated backwards of what I expect, so reversed.
+
+# The generated weights for values at the four node points
+# are the ratio of the area defined by area of the rectangle defined
+# by the trial point and the oposite node normalized by the total
+# cell area.
 
 def get_weights(l, m):
     w1 = 1 - l - m + l * m
-    w2 = m - l * m
+    w2 = l - l * m      # I think this should be  l - l*m, but it gives the right answer as is
     w3 = l * m
-    w4 = l - l * m
+    w4 = m - l * m      # and this one should be  m - l*m
 
     return np.array((w1, w2, w3, w4)).T
 
@@ -242,13 +239,13 @@ class CellTree(object):
     
     def __init__(self, grid_x, grid_y):
         self.nodes, self.faces = array2grid(grid_x, grid_y)
-        self.squares = np.array([nodes[face] for face in faces])
-        self.ct = cell_tree2d.CellTree(nodes, faces)
+        self.squares = np.array([self.nodes[face] for face in self.faces])
+        self.ct = cell_tree2d.CellTree(self.nodes, self.faces)
     
     def locate(self, points):
         
         # find the grid squares that contain the points
-        gridpoint_indices = ct.locate(points)
+        gridpoint_indices = self.ct.locate(points)
 
         # remove gridpoint indices with value -1, 
         # which are outside the grid domain
@@ -263,11 +260,16 @@ class CellTree(object):
         return CellTree_interpolator(squares, points, self.faces, gridpoint_indices)
 
 
-def test_cell_tree2d(squares, points, eps=0.01):
+def test_cell_tree2d(x, y, points, eps=0.001):
     '''
     squares: an array of quads, full grid [Nsquares, 4, 2]
     points:  an array of trial points [Npoints, 2]
     ''' 
+    
+    nodes, faces = array2grid(x, y)
+    squares = np.array([nodes[face] for face in faces])
+    ct = cell_tree2d.CellTree(nodes, faces)
+    
     # find squares that contain query points
     gridpoint_indices = ct.locate(points)
 
@@ -285,23 +287,23 @@ def test_cell_tree2d(squares, points, eps=0.01):
         
     assert(np.alltrue(contains))
     
-    return np.asarray(contains)
+    print('   cell_tree2d test passed...')
 
 
-def test_interpolation(squares, points, zfunc):
+def test_interpolation(x, y, points, zfunc):
     
     ct = CellTree(x, y)
     loc = ct.locate(points)
     zgrid = zfunc(x, y)
     zi = loc.interpolate(zgrid)
-    print(zi.shape)
     
     # use loc.points, as this contains only the points in the domain.
     zi_true = zfunc(*loc.points.T)
-    print(zi_true.shape)
     
-    assert( np.allclose(zi, zi_true, rtol=1e-3) )
-    
+    assert( np.allclose(zi, zi_true, rtol=1e-4) )
+
+    print('   Interpolation test passed...')
+
 
 if __name__ == '__main__':
     
@@ -325,7 +327,7 @@ if __name__ == '__main__':
 
         return x, y
 
-    x, y = make_sample_grid(70, 50)
+    x, y = make_sample_grid(200, 300)
 
     # Some sample grid locations
     x_nodes, y_nodes = x.flatten(), y.flatten()
@@ -338,34 +340,38 @@ if __name__ == '__main__':
 
     x_centers = 0.25*(x[1:, 1:] + x[1:, :-1] + x[:-1, 1:] + x[:-1, :-1]).flatten()
     y_centers = 0.25*(y[1:, 1:] + y[1:, :-1] + y[:-1, 1:] + y[:-1, :-1]).flatten()
-
-    # create nodes and faces
-    nodes, faces = array2grid(x, y)
-    squares = np.array([nodes[face] for face in faces])
-    ct = cell_tree2d.CellTree(nodes, faces)
     
-
+    # centers offset halfway toward the lower right node
+    x_nc = 0.5*(0.25*(x[1:, 1:] + x[1:, :-1] + x[:-1, 1:] + x[:-1, :-1]) + x[:-1, 1:]).flatten()
+    y_nc = 0.5*(0.25*(y[1:, 1:] + y[1:, :-1] + y[:-1, 1:] + y[:-1, :-1]) + y[:-1, 1:]).flatten()
+    
     def zfunc(x, y):
         'Sample field for interpolation'
         return np.sin(x/10.) + np.cos(y/10.)
 
     # create a set of trial points
-    points = 10*np.random.randn(10000, 2)                 # random points
-    test_cell_tree2d(squares, points)
-    test_interpolation(squares, points, zfunc)
-
-    points = np.vstack((x_centers, y_centers)).T   # cell centers
-    test_cell_tree2d(squares, points)
-    test_interpolation(squares, points, zfunc)
-
-    points = np.vstack((x_nodes, y_nodes)).T       # cell corners
-    test_cell_tree2d(squares, points)
-    test_interpolation(squares, points, zfunc)
     
-    points = np.vstack((x_u, y_u)).T               # x-direction edges
-    test_cell_tree2d(squares, points)
-    test_interpolation(squares, points, zfunc)
+    print('Random points...')
+    points = 10*np.random.randn(100000, 2)
+    test_cell_tree2d(x, y, points)
+    test_interpolation(x, y, points, zfunc)
 
+    print('Square centers')
+    points = np.vstack((x_centers, y_centers)).T   # cell centers
+    test_cell_tree2d(x, y, points)
+    test_interpolation(x, y, points, zfunc)
+
+    print('Cell corners')
+    points = np.vstack((x_nodes, y_nodes)).T       # cell corners
+    test_cell_tree2d(x, y, points)
+    test_interpolation(x, y, points, zfunc)
+    
+    print('x-edges')
+    points = np.vstack((x_u, y_u)).T               # x-direction edges
+    test_cell_tree2d(x, y, points)
+    test_interpolation(x, y, points, zfunc)
+
+    print('y-edges')
     points = np.vstack((x_v, y_v)).T               # y-direction edges
-    test_cell_tree2d(squares, points)
-    test_interpolation(squares, points, zfunc)
+    test_cell_tree2d(x, y, points)
+    test_interpolation(x, y, points, zfunc)
