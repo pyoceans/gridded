@@ -41,7 +41,8 @@ def compute_coeffs(squares_i):
     -----
     squares :   array,  dimension = (Nsquares, 4, 2)
                 x, y coordinates of the squares in the grid.
-                Order matters for the second dimension: br, tr, tl, bl
+                Order matters for the second dimension: bl, br, tr, tl
+                I.e., starting in the lower left and cycling CCW (positiv]]]]
     
     Output:
     ------
@@ -50,8 +51,8 @@ def compute_coeffs(squares_i):
                 b, the coefficients in y  (what coefficients?)
     
     """
-    a = np.dot(_AI, squares_i[:,:,0].T)   # no need for complex conjugate. px is always real.
-    b = np.dot(_AI, squares_i[:,:,1].T)   #                           .....so is py
+    a = np.dot(_AI, squares_i[:,:,0].T)   # no need for complex conjugate. x is always real.
+    b = np.dot(_AI, squares_i[:,:,1].T)   #                          .....so is y
     return a, b
 
 
@@ -107,25 +108,20 @@ def locate_faces(points, grid):
         return res
     else:
         res = np.ma.masked_less(ind, 0)
-        if _memo:
-            self._add_memo(points, res, grid, self._ind_memo_dict, _copy, _hash)
         return res
 
 
-def get_alphas(x, y, a, b):
+def get_lm(x, y, a, b):
     """
-    Params:
-    a: x coefficients
-    b: y coefficients
+    Input:
+    -----
+    a: x affine transformation coefficients
+    b: y affine transformation coefficients
     x: x coordinate of points defining squares (possibly only query points)
     y: y coordinate of points defining squares (possibly only query points)
 
     Returns:
-    (l,m) - coordinate in logical space to use for interpolation
-
-    Eqns:
-    m = (-bb +- sqrt(bb^2 - 4*aa*cc))/(2*aa)
-    l = (l-a1 - a3*m)/(a2 + a4*m)
+    weights - weights of grid nodes to use in interpolation
     """
     def lin_eqn(l, m, ind_arr, aa, bb, cc):
         """
@@ -138,10 +134,7 @@ def get_alphas(x, y, a, b):
         l[ind_arr] = (x[ind_arr] - a[0][ind_arr] - a[2][ind_arr]
                       * m[ind_arr]) / (a[1][ind_arr] + a[3][ind_arr] * m[ind_arr])
 
-    def quad_eqn(l, m, ind_arr, aa, bb, cc):
-        """
-
-        """
+    def quad_eqn(l, m, ind_arr, aa, bb, cc, eps=1e-5):
         if len(aa) is 0:
             return
         k = bb * bb - 4 * aa * cc
@@ -159,8 +152,10 @@ def get_alphas(x, y, a, b):
         m[ind_arr] = m1
         l[ind_arr] = l1
 
-        t1 = np.logical_or(l1 < 0, l1 > 1)
-        t2 = np.logical_or(m1 < 0, m1 > 1)
+        # the addition of eps is needed for numerical precision when the points are
+        # on the cell edge. 
+        t1 = np.logical_or(l1 < -eps, l1 > 1.0+eps)
+        t2 = np.logical_or(m1 < -eps, m1 > 1.0+eps)
         t3 = np.logical_or(t1, t2)
 
         l[ind_arr[t3]] = l2[t3]
@@ -179,12 +174,15 @@ def get_alphas(x, y, a, b):
     lin_eqn(l, m, np.where(t)[0], aa[t], bb[t], cc[t])
     quad_eqn(l, m, np.where(~t)[0], aa[~t], bb[~t], cc[~t])
     
-    aa = 1 - l - m + l * m
-    ab = m - l * m
-    ac = l * m
-    ad = l - l * m
+    return l, m
 
-    return np.array((aa, ab, ac, ad)).T, l, m
+def get_weights(l, m):
+    w1 = 1 - l - m + l * m
+    w2 = m - l * m
+    w3 = l * m
+    w4 = l - l * m
+
+    return np.array((w1, w2, w3, w4)).T
 
 
 def array2grid(x, y):
@@ -192,18 +190,21 @@ def array2grid(x, y):
     
     Input
     -----
-    x, y :  ndarray
+    x, y :  ndarray (each [Ny, Nx])
+            The nodes defining the 2D grid.
     
     Output
     ------
-    nodes : flattened xy pairs
-    faces : indices of square nodes
+    nodes : ndarray [Nnodes, 2]
+            flattened xy pairs.    
+    faces : ndarray [Nsquares, 4]
+            connectivity indices of the nodes defining the grid squares. 
     '''
-    nodes = np.ascontiguousarray(np.column_stack((x[:].reshape(-1),
-                                                  y[:].reshape(-1)))).astype(np.float64)
+    nodes = np.ascontiguousarray( np.column_stack((x[:].reshape(-1),
+                                                   y[:].reshape(-1))) ).astype(np.float64)
     j_len, i_len = x.shape
-    # faces = np.array([np.array([[xi + i_len, xi + i_len + 1, xi + 1, xi]
-    #                             for xi in range(0, i_len - 1, 1)]) + yi * i_len for yi in range(0, j_len - 1)])
+
+    # create square starting in the lower left, and continuing CCW (+)
     faces = np.array([np.array([[xi, xi+1, xi+i_len+1, xi+i_len]
                                 for xi in range(0, i_len-1, 1)]) + yi * i_len for yi in range(0, j_len-1)])
     faces = np.ascontiguousarray(faces.reshape(-1, 4).astype(np.int32))
@@ -211,54 +212,58 @@ def array2grid(x, y):
     return nodes, faces
 
 
+class CellTree_interpolator(object):
+    
+    def __init__(self, squares, points, faces, gridpoint_indices):
+        
+        self.squares = squares
+        self.points = points
+        self.faces = faces
+        self.gridpoint_indices = gridpoint_indices
+        
+        self.a, self.b = compute_coeffs(self.squares)
+        xi, yi = self.points.T
+    
+        self.l, self.m = get_lm(xi, yi, self.a, self.b)
+        self.alphas = get_weights(self.l, self.m)
+    
+    def interpolate(self, grid_z):
+        # Interpolated values based on z at the verticies and the
+        # calculated alpha weights.
+        
+        z = np.ascontiguousarray(grid_z[:].reshape(-1)).astype(np.float64)
+        
+        z_verts = z[self.faces][self.gridpoint_indices]
 
-# sample grid
-xc, yc = np.mgrid[1:10:15j, 1:20:18j]
-yc = yc**1.2 + xc**1.5
+        return (z_verts * self.alphas).sum(axis=-1)
+        
 
-def rot2d(x, y, ang):
-    '''rotate vectors by geometric angle'''
-    xr = x*np.cos(ang) - y*np.sin(ang)
-    yr = x*np.sin(ang) + y*np.cos(ang)
-    return xr, yr
+class CellTree(object):
+    
+    def __init__(self, grid_x, grid_y):
+        self.nodes, self.faces = array2grid(grid_x, grid_y)
+        self.squares = np.array([nodes[face] for face in faces])
+        self.ct = cell_tree2d.CellTree(nodes, faces)
+    
+    def locate(self, points):
+        
+        # find the grid squares that contain the points
+        gridpoint_indices = ct.locate(points)
 
-x, y = rot2d(xc, yc, 0.2)
-y /= 10.0
+        # remove gridpoint indices with value -1, 
+        # which are outside the grid domain
+        inside = gridpoint_indices >= 0
+        points = points[inside]
 
-x -= x.mean()
-y -= y.mean()
-
-x_nodes, y_nodes = x.flatten(), y.flatten()
-
-x_centers = 0.25*(x[1:, 1:] + x[1:, :-1] + x[:-1, 1:] + x[:-1, :-1]).flatten()
-y_centers = 0.25*(y[1:, 1:] + y[1:, :-1] + y[:-1, 1:] + y[:-1, :-1]).flatten()
-
-# create nodes and faces
-nodes, faces = array2grid(x, y)
-squares = np.array([nodes[face] for face in faces])
-ct = cell_tree2d.CellTree(nodes, faces)
-
-# create a set of trial points
-# xyi = np.random.randn(10, 2)                 # random points
-xyi = np.vstack((x_centers, y_centers)).T       # centers of gridded data squares
-# xyi = np.vstack((x_nodes, y_nodes)).T           # nodes of gridded data squares, ie., at data points
-
-# want only squares that contain query points
-gridpoint_indices = ct.locate(xyi)
-
-# remove gridpoint indices with value -1, 
-# which are outside the grid domain
-inside = gridpoint_indices >= 0
-gridpoint_indices = gridpoint_indices[inside]
-xyi = xyi[inside]
+        # get the corresponding squares to the points
+        # inside the domain
+        gridpoint_indices = gridpoint_indices[inside]
+        squares = self.squares[gridpoint_indices]
+        
+        return CellTree_interpolator(squares, points, self.faces, gridpoint_indices)
 
 
-squares_i = squares[gridpoint_indices]
-
-
-# First a sanity check. Are the trial points really inside squares_i?
-
-def test_cell_tree2d(squares, points):
+def test_cell_tree2d(squares, points, eps=0.01):
     '''
     squares: an array of quads, full grid [Nsquares, 4, 2]
     points:  an array of trial points [Npoints, 2]
@@ -269,52 +274,98 @@ def test_cell_tree2d(squares, points):
     # remove indices with value -1, outside the grid domain
     inside = gridpoint_indices >= 0    # good points, inside domain
     gridpoint_indices = gridpoint_indices[inside]
-    points = points[inside]
 
-    mesh = MultiPolygon([Polygon(p) for p in squares])
-    trial = MultiPoint([Point(p) for p in xyi])
+    points_i = points[inside]
+    squares_i = squares[gridpoint_indices]
+    
+    mesh = MultiPolygon([Polygon(p).buffer(eps) for p in squares_i])
+    trial = MultiPoint([Point(p) for p in points_i])
     
     contains = [m.contains(p) for m, p in zip(mesh, trial)]
-    
+        
     assert(np.alltrue(contains))
-
-##### make up some trial points
-# 
-#
-a, b = compute_coeffs(squares_i)
-
-xi, yi = xyi.T
-alphas, l, m = get_alphas(xi, yi, a, b)
+    
+    return np.asarray(contains)
 
 
-def z(x, y):
-    return x**2 * y**2 + np.sin(x)*np.cos(y)
+def test_interpolation(squares, points, zfunc):
+    
+    ct = CellTree(x, y)
+    loc = ct.locate(points)
+    zgrid = zfunc(x, y)
+    zi = loc.interpolate(zgrid)
+    print(zi.shape)
+    
+    # use loc.points, as this contains only the points in the domain.
+    zi_true = zfunc(*loc.points.T)
+    print(zi_true.shape)
+    
+    assert( np.allclose(zi, zi_true, rtol=1e-3) )
+    
 
-z_verts = z(*nodes.T)[faces][gridpoint_indices]
+if __name__ == '__main__':
+    
+    def make_sample_grid(Ny, Nx):
+        'return sample grid of dimension [Ny, Nx]'
+        yc, xc = np.mgrid[1:10:Ny*1j, 1:20:Nx*1J]
 
-zi = (z_verts * alphas).sum(axis=-1)
+        def rot2d(x, y, ang):
+            '''rotate vectors by geometric angle'''
+            xr = x*np.cos(ang) - y*np.sin(ang)
+            yr = x*np.sin(ang) + y*np.cos(ang)
+            return xr, yr
 
-zi_true = z(xi, yi)
+        x, y = rot2d(xc, (5+yc)**1.2*(3+xc)**0.3, 0.2)
 
-# assert( np.allclose(zi, zi_true) )
+        y /= y.ptp()/10.
+        x /= x.ptp()/10.
 
+        x -= x.mean()
+        y -= y.mean()
 
-#######################
-# edited to hear
-######################
+        return x, y
 
-#
-# reflats = points[:, 1]
-# reflons = points[:, 0]
-#
-# l, m = x_to_l(reflons, reflats, a, b)
-#
-# aa = 1 - l - m + l * m
-# ab = m - l * m
-# ac = l * m
-# ad = l - l * m
-# alphas = np.array((aa, ab, ac, ad)).T
-#
-# if _memo:
-#     self._add_memo(points, alphas, grid, self._alpha_memo_dict, _copy, _hash)
-# return alphas
+    x, y = make_sample_grid(70, 50)
+
+    # Some sample grid locations
+    x_nodes, y_nodes = x.flatten(), y.flatten()
+
+    x_u = 0.5*(x[:, 1:] + x[:, :-1]).flatten()
+    y_u = 0.5*(y[:, 1:] + y[:, :-1]).flatten()
+
+    x_v = 0.5*(x[1:, :] + x[:-1, :]).flatten()
+    y_v = 0.5*(y[1:, :] + y[:-1, :]).flatten()
+
+    x_centers = 0.25*(x[1:, 1:] + x[1:, :-1] + x[:-1, 1:] + x[:-1, :-1]).flatten()
+    y_centers = 0.25*(y[1:, 1:] + y[1:, :-1] + y[:-1, 1:] + y[:-1, :-1]).flatten()
+
+    # create nodes and faces
+    nodes, faces = array2grid(x, y)
+    squares = np.array([nodes[face] for face in faces])
+    ct = cell_tree2d.CellTree(nodes, faces)
+    
+
+    def zfunc(x, y):
+        'Sample field for interpolation'
+        return np.sin(x/10.) + np.cos(y/10.)
+
+    # create a set of trial points
+    points = 10*np.random.randn(10000, 2)                 # random points
+    test_cell_tree2d(squares, points)
+    test_interpolation(squares, points, zfunc)
+
+    points = np.vstack((x_centers, y_centers)).T   # cell centers
+    test_cell_tree2d(squares, points)
+    test_interpolation(squares, points, zfunc)
+
+    points = np.vstack((x_nodes, y_nodes)).T       # cell corners
+    test_cell_tree2d(squares, points)
+    test_interpolation(squares, points, zfunc)
+    
+    points = np.vstack((x_u, y_u)).T               # x-direction edges
+    test_cell_tree2d(squares, points)
+    test_interpolation(squares, points, zfunc)
+
+    points = np.vstack((x_v, y_v)).T               # y-direction edges
+    test_cell_tree2d(squares, points)
+    test_interpolation(squares, points, zfunc)
